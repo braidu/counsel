@@ -8,7 +8,7 @@ st.set_page_config(
     layout="centered"
 )
 
-st.title("🎓 경기대 상담심리·상담교육 학위논문 가이드")
+st.title("🎓 경기대 상담심리·상담교육 학위논문 참고문헌 작성 가이드")
 st.caption("v2026.05.27 개정 지침 반영 | 선생님 모드 구동 중")
 st.markdown("---")
 
