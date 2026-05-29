@@ -24,7 +24,8 @@ if PDF_PATH.exists():
     pdf_bytes = PDF_PATH.read_bytes()
 
     st.markdown("### 📘 상담심리전공 학위논문 참고문헌 작성 검증 (AI는 실수할 수 있으니 꼭 다시 검증하세요)")
-
+    st.markdown("## (AI는 실수할 수 있으니 꼭 다시 검증하세요)")
+    
     st.download_button(
         label="📄 학위논문 작성법 PDF 다운로드",
         data=pdf_bytes,
