@@ -1,9 +1,8 @@
 import re
-from typing import Dict, List, Tuple
-
+import html
 import streamlit as st
-from openai import OpenAI
-
+from dataclasses import dataclass
+from typing import List, Tuple
 
 st.set_page_config(
     page_title="경기대 상담심리 참고문헌 검증기",
@@ -15,344 +14,264 @@ st.title("🎓 경기대 상담심리·상담교육 참고문헌 검증기")
 st.caption("경기대학교 일반대학원 상담심리학과/교육대학원 상담교육전공 학위논문 참고문헌 작성법 기준")
 
 st.info(
-    "본문 인용과 참고문헌을 붙여넣으면 경기대 상담심리·상담교육 양식 기준으로 1차 검증합니다. "
-    "Word의 실제 굵게/이탤릭 서식은 텍스트 입력창에서 직접 판별할 수 없으므로, "
-    "굵게 검증은 Markdown 표기(**진로교육연구, 34**(4))가 있을 때만 확정 판정합니다."
+    "AI 정밀검토 기능은 제거했습니다. 현재 버전은 규칙 기반으로만 검증하므로 "
+    "본문 인용과 참고문헌 목록의 형식 오류를 더 일관되게 판정합니다."
 )
 
 with st.expander("📌 핵심 규칙 보기", expanded=False):
     st.markdown(
         """
-### 본문 내 인용
-- 1인 서술형: `김경기(2021)` / 괄호형: `(김경기, 2021)`
-- 2인 서술형: `최의소와 조광명(1979)`, `Fredrickson과 Roberts(1997)`
-- 2인 괄호형: `(Fredrickson & Roberts, 1997)`
+### 1. 본문 내 인용
+- 저자명과 연도 사이 공백 없음: `김지형(2014)`, `Fredrickson과 Roberts(1997)`
+- 2인 저자 서술형: `최의소와 조광명(1979)`, `Fredrickson과 Roberts(1997)`
+- 2인 저자 괄호형: `(Fredrickson & Roberts, 1997)`
 - 3인 이상 서술형: `염종훈 등(1999)`, `Kosslyn 등(1996)`
 - 3인 이상 괄호형: `(Kosslyn et al., 1996)`
 - 다수 문헌 괄호형: `(Adams et al., 2019; Shumway & Shulman, 2015; Westinghouse, 2017)`
 
-### 참고문헌 목록
-- 국문 학술지 논문: `저자 (연도). 논문제목. **학술지명, 권**(호), 쪽.`
-- 국문 참고문헌 저자 뒤에는 마침표를 찍지 않고 바로 `(연도)`를 씁니다.
-  - 맞음: `김지연 (2021). 제목. **진로교육연구, 34**(4), 1-35.`
-  - 틀림: `김지연. (2021). 제목. **진로교육연구, 34**(4), 1-35.`
-- 국문 저자 나열에는 `&`를 쓰지 않습니다.
-- 학위논문 참고문헌에서는 DOI를 생략합니다.
-"""
+### 2. 참고문헌 목록
+- 국문 저자 뒤에는 마침표를 찍지 않음: `김지연 (2021).`
+- 참고문헌 목록에서는 저자명과 연도 사이 한 칸 띄움
+- 국문 저자 나열에는 `&`를 사용하지 않음: `김기욱, 박성규 (2019).`
+- 국문 학술지 논문은 학술지명과 권까지만 굵게: `**진로교육연구, 34**(4), 1-35.`
+- `(호)`와 페이지는 굵게 처리하지 않음
+- 학위논문 참고문헌에서는 DOI 생략
+        """
     )
 
-
-# -----------------------------
-# API 설정
-# -----------------------------
-api_key = st.secrets.get("OPENAI_API_KEY", None)
-if not api_key:
-    api_key = st.sidebar.text_input("OpenAI API Key", type="password")
-
-client = OpenAI(api_key=api_key) if api_key else None
-model = st.sidebar.selectbox("AI 정밀 검토 모델", ["gpt-4o-mini", "gpt-4.1-mini"], index=0)
-
-
-SYSTEM_PROMPT = "\n".join(
-    [
-        "당신은 경기대학교 일반대학원 상담심리학과 및 교육대학원 상담교육전공 학위논문 참고문헌 작성법 검증 도우미다.",
-        "일반 APA 지식보다 경기대 상담심리·상담교육 지침을 우선한다.",
-        "규칙 위반이 명확하지 않으면 임의로 고치지 말고 '확인 필요'라고 쓴다.",
-        "학생 입력과 수정 후가 완전히 동일하다면 교정 내역 표에 넣지 않는다.",
-        "국문 참고문헌의 저자 뒤에는 마침표를 찍지 않는다. 예: 김지연 (2021).",
-        "국문 참고문헌에서 김기욱,& 박성규. (2019). 같은 표기는 틀렸다. 예: 김기욱, 박성규 (2019).",
-        "국문 학술지 논문은 학술지명과 권까지만 굵게다. 예: **진로교육연구, 34**(4), 1-35.",
-        "(호)와 페이지는 굵게가 아니다.",
-        "본문 인용에서 Fredrickson과 Roberts(1997)는 맞다. 이를 Fredrickson & Roberts(1997)로 고치면 안 된다.",
-        "괄호형 다중 인용에서 (Calogero et al., 2011; Fredrickson et al., 1998)는 맞다.",
-        "괄호형 다중 인용을 Calogero et al. (2011); Fredrickson et al. (1998)처럼 바꾸면 안 된다.",
-        "출력은 간결하게 하되, 학생이 바로 복사할 수 있는 최종 권장 표기를 제공한다.",
-    ]
+mode = st.radio(
+    "검증 유형을 선택하세요",
+    ["자동 판정", "본문 내 인용", "참고문헌 목록"],
+    horizontal=True,
 )
 
+sample = "김지형 (2014) 의료 판매원의 정서성, 직무 자율성, 고객 무례성이 감정노동의 수행 및 결과에 미치는 영향. 숙명여자대학교 대학원 박사학위 논문\n고남정. (2018). 유식 삼성설과 인지치료의 비교연구: 엘리스와 아론벡의인지치료를 중심으로. (박사학위논문). 동국대학교."
 
-# -----------------------------
-# 공통 유틸
-# -----------------------------
+user_text = st.text_area(
+    "검증할 본문 인용 또는 참고문헌 목록을 입력하세요",
+    height=220,
+    placeholder=sample,
+)
+
+@dataclass(frozen=True)
+class Correction:
+    item: str
+    before: str
+    after: str
+    note: str = ""
+
+
 def normalize_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def same_text(a: str, b: str) -> bool:
-    return normalize_spaces(a) == normalize_spaces(b)
+def add_correction(corrections: List[Correction], item: str, before: str, after: str, note: str = "") -> None:
+    before_clean = normalize_spaces(before)
+    after_clean = normalize_spaces(after)
+    if not before_clean or before_clean == after_clean:
+        return
+    key = (item, before_clean, after_clean)
+    existing = {(c.item, c.before, c.after) for c in corrections}
+    if key not in existing:
+        corrections.append(Correction(item, before_clean, after_clean, note))
 
 
-def split_entries(text: str) -> List[str]:
-    """참고문헌/본문 입력을 줄 단위로 나눈다. 너무 짧은 줄은 제외한다."""
-    raw = [line.strip() for line in text.splitlines()]
-    entries = [line for line in raw if line and line not in {"[...]", "…"}]
-    return entries
+def guess_mode(text: str) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return "본문 내 인용"
+    ref_like = 0
+    for ln in lines:
+        if re.search(r"\([12]\d{3}|근간|in press|n\.d\.\)\)", ln) and re.search(r"\.\s*", ln):
+            ref_like += 1
+        if re.search(r"학위논문|학위 논문|대학교|대학원|[가-힣A-Za-z ]+,\s*\d+\(\d+\),\s*\d+\s*-\s*\d+", ln):
+            ref_like += 1
+    return "참고문헌 목록" if ref_like >= max(1, len(lines) // 2) else "본문 내 인용"
 
 
-def make_markdown_table(rows: List[Dict[str, str]]) -> str:
-    if not rows:
-        return "오류가 명확히 감지되지 않았습니다."
+def check_in_text(text: str) -> Tuple[List[Correction], str]:
+    corrections: List[Correction] = []
+    fixed = text
 
-    table = "| 항목 | 수정 전 | 수정 후 |\n|---|---|---|\n"
-    for row in rows:
-        before = row["before"].replace("|", "\\|")
-        after = row["after"].replace("|", "\\|")
-        table += f"| {row['item']} | {before} | {after} |\n"
-    return table
-
-
-# -----------------------------
-# 본문 인용 검증
-# -----------------------------
-def check_in_text_citation(text: str) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
-
-    # 저자명과 연도 사이 공백: 김경기 (2021), Fredrickson (1997)
-    for m in re.finditer(r"(?<![\w가-힣])([가-힣A-Za-z][가-힣A-Za-z .'-]*?)\s+\((\d{4}|n\.d\.)\)", text):
+    # 저자명과 연도 사이 공백: 김지형 (2014) -> 김지형(2014)
+    pattern_space = re.compile(r"([가-힣A-Za-z]+(?:과|와| 등| 외| et al\.)?)\s+\((\d{4}|n\.d\.)\)")
+    for m in pattern_space.finditer(text):
         before = m.group(0)
-        after = f"{m.group(1).strip()}({m.group(2)})"
-        if not same_text(before, after):
-            rows.append({"item": "본문인용 공백", "before": before, "after": after})
+        after = f"{m.group(1)}({m.group(2)})"
+        add_correction(corrections, "본문인용 공백", before, after, "본문 내 인용에서는 저자명과 연도 사이를 붙입니다.")
+        fixed = fixed.replace(before, after)
 
-    # 영문 2인 서술형에서 &를 쓴 경우: Fredrickson & Roberts(1997)
-    # 단, 괄호형 (Fredrickson & Roberts, 1997)는 맞으므로 잡지 않음
-    for m in re.finditer(r"(?<!\()\b([A-Z][A-Za-z.'-]+)\s*&\s*([A-Z][A-Za-z.'-]+)\((\d{4})\)", text):
+    # 저자명 뒤 점: 고남정.(2018) 또는 고남정. (2018) -> 고남정(2018)
+    pattern_dot = re.compile(r"([가-힣A-Za-z]+)\.\s*\((\d{4}|n\.d\.)\)")
+    for m in pattern_dot.finditer(text):
+        before = m.group(0)
+        after = f"{m.group(1)}({m.group(2)})"
+        add_correction(corrections, "본문인용 저자 뒤 마침표", before, after, "본문 내 인용에서는 저자명 뒤 마침표를 쓰지 않습니다.")
+        fixed = fixed.replace(before, after)
+
+    # 영문 2인 서술형 & 오용: Fredrickson & Roberts(1997) -> Fredrickson과 Roberts(1997)
+    pattern_amp_narrative = re.compile(r"\b([A-Z][A-Za-z'\-]+)\s*&\s*([A-Z][A-Za-z'\-]+)\s*\((\d{4}|n\.d\.)\)")
+    for m in pattern_amp_narrative.finditer(text):
         before = m.group(0)
         after = f"{m.group(1)}과 {m.group(2)}({m.group(3)})"
-        rows.append({"item": "2인 저자 서술형", "before": before, "after": after})
+        add_correction(corrections, "2인 저자 서술형", before, after, "서술형에서는 영문 저자라도 와/과를 사용합니다.")
+        fixed = fixed.replace(before, after)
 
-    # 영문 2인 서술형에서 and를 쓴 경우
-    for m in re.finditer(r"\b([A-Z][A-Za-z.'-]+)\s+and\s+([A-Z][A-Za-z.'-]+)\((\d{4})\)", text):
-        before = m.group(0)
-        after = f"{m.group(1)}과 {m.group(2)}({m.group(3)})"
-        rows.append({"item": "2인 저자 서술형", "before": before, "after": after})
-
-    # 괄호형 영문 2인에서 and 사용: (Kim and Kolen, 2007)
-    for m in re.finditer(r"\(([A-Z][A-Za-z.'-]+)\s+and\s+([A-Z][A-Za-z.'-]+),\s*(\d{4})\)", text):
+    # 괄호형 영문 2인 and 오용: (Kim and Kolen, 2007) -> (Kim & Kolen, 2007)
+    pattern_and_parenthetical = re.compile(r"\(([A-Z][A-Za-z'\-]+)\s+and\s+([A-Z][A-Za-z'\-]+),\s*(\d{4}|n\.d\.)\)")
+    for m in pattern_and_parenthetical.finditer(text):
         before = m.group(0)
         after = f"({m.group(1)} & {m.group(2)}, {m.group(3)})"
-        rows.append({"item": "2인 저자 괄호형", "before": before, "after": after})
+        add_correction(corrections, "2인 저자 괄호형", before, after, "괄호형 영문 인용에서는 &를 사용합니다.")
+        fixed = fixed.replace(before, after)
 
-    # 3인 이상 서술형에서 et al. 사용: Kosslyn et al.(1996)
-    for m in re.finditer(r"\b([A-Z][A-Za-z.'-]+)\s+et\s+al\.?\s*\((\d{4})\)", text):
+    # 서술형 3인 이상 et al. 오용: Kosslyn et al.(1996) -> Kosslyn 등(1996)
+    pattern_etal_narrative = re.compile(r"\b([A-Z][A-Za-z'\-]+)\s+et\s+al\.\s*\((\d{4}|n\.d\.)\)")
+    for m in pattern_etal_narrative.finditer(text):
         before = m.group(0)
         after = f"{m.group(1)} 등({m.group(2)})"
-        rows.append({"item": "3인 이상 서술형", "before": before, "after": after})
+        add_correction(corrections, "3인 이상 서술형", before, after, "서술형에서는 영문 저자라도 등/외를 사용합니다.")
+        fixed = fixed.replace(before, after)
 
-    # 문장 끝 괄호형 앞에 마침표가 먼저 온 경우: 주장하였다.(김, 2020)
-    for m in re.finditer(r"\.\s*(\([^)]*,\s*(?:\d{4}|n\.d\.)[^)]*\))", text):
+    # 문장 끝 괄호형 인용 앞 마침표: .(김지형, 2014) -> (김지형, 2014).
+    pattern_period_before = re.compile(r"\.\s*(\([^\)]*?,\s*(?:\d{4}|n\.d\.)[^\)]*\))")
+    for m in pattern_period_before.finditer(text):
         before = m.group(0)
         after = f"{m.group(1)}."
-        rows.append({"item": "마침표 위치", "before": before, "after": after})
+        add_correction(corrections, "괄호형 인용 마침표 위치", before, after, "마침표는 괄호형 인용 뒤에 둡니다.")
+        fixed = fixed.replace(before, after)
 
-    # 동일 교정 중복 제거
-    unique = []
-    seen = set()
-    for row in rows:
-        key = (row["item"], row["before"], row["after"])
-        if key not in seen and not same_text(row["before"], row["after"]):
-            unique.append(row)
-            seen.add(key)
-    return unique
+    return corrections, fixed
 
 
-# -----------------------------
-# 참고문헌 검증
-# -----------------------------
-def fix_korean_author_segment(author_segment: str) -> str:
-    """국문 참고문헌 저자부의 대표 오류 수정."""
-    s = author_segment.strip()
-    s = re.sub(r"\s*&\s*", " ", s)  # 국문 저자부 & 제거 전처리
-    s = re.sub(r",\s*and\s*", ", ", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"\s*,\s*", ", ", s)
-    s = s.strip(" ,.")
-    return s
+def fix_korean_author_segment(line: str) -> Tuple[str, List[Correction]]:
+    corrections: List[Correction] = []
+    original = line
+
+    # 연도 앞까지를 저자부로 간주
+    m = re.search(r"\((\d{4}|근간|in press|n\.d\.)\)", line)
+    if not m:
+        return line, corrections
+
+    author_part = line[:m.start()].strip()
+    rest = line[m.start():]
+    new_author = author_part
+
+    # 국문 저자부의 & 제거
+    if "&" in new_author and re.search(r"[가-힣]", new_author):
+        before = new_author
+        new_author = new_author.replace("&", "")
+        new_author = re.sub(r",\s*,", ",", new_author)
+        new_author = re.sub(r",\s*$", "", new_author).strip()
+        add_correction(corrections, "국문 저자 & 사용", before, new_author, "국문 저자 나열에는 &를 사용하지 않습니다.")
+
+    # 저자명 뒤 마침표 제거: 김지형. -> 김지형
+    if re.search(r"\.\s*$", new_author):
+        before = new_author
+        new_author = re.sub(r"\.\s*$", "", new_author).strip()
+        add_correction(corrections, "참고문헌 저자 뒤 마침표", before, new_author, "참고문헌 목록에서도 저자명 뒤에는 마침표를 찍지 않고 연도 괄호가 이어집니다.")
+
+    # 쉼표 주변 정리
+    before_spacing = new_author
+    new_author = re.sub(r"\s*,\s*", ", ", new_author)
+    new_author = re.sub(r"\s+", " ", new_author).strip()
+    if before_spacing != new_author:
+        add_correction(corrections, "국문 저자 나열 공백", before_spacing, new_author, "저자 사이는 쉼표 뒤 한 칸으로 정리합니다.")
+
+    fixed = f"{new_author} {rest}"
+
+    # 참고문헌 목록에서 저자와 연도 사이 공백 보장
+    before_line = fixed
+    fixed = re.sub(r"^(.+?)\s*\((\d{4}|근간|in press|n\.d\.)\)", r"\1 (\2)", fixed, count=1)
+    if before_line != fixed:
+        add_correction(corrections, "참고문헌 연도 앞 공백", before_line, fixed, "참고문헌 목록에서는 저자명과 연도 사이를 한 칸 띄웁니다.")
+
+    return fixed, corrections
 
 
-def check_reference_entry(entry: str) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
-    original = entry.strip()
+def check_references(text: str) -> Tuple[List[Correction], str]:
+    corrections: List[Correction] = []
+    fixed_lines = []
 
-    # DOI 생략 규칙
-    if re.search(r"doi\s*:|doi\.org", original, flags=re.IGNORECASE):
-        rows.append({"item": "DOI 생략", "before": "DOI 포함", "after": "학위논문 참고문헌에서는 DOI 생략"})
+    for line in text.splitlines():
+        if not line.strip():
+            fixed_lines.append(line)
+            continue
 
-    # 국문 참고문헌 저자부: 저자. (연도). -> 저자 (연도).
-    m = re.match(r"^(.+?)\.\s*\((\d{4}|근간|in press|n\.d\.|\d{4},\s*[^)]+)\)\.", original)
-    if m and re.search(r"[가-힣]", m.group(1)):
-        fixed_authors = fix_korean_author_segment(m.group(1))
-        before = m.group(0)
-        after = f"{fixed_authors} ({m.group(2)})."
-        if not same_text(before, after):
-            rows.append({"item": "국문 저자 뒤 마침표", "before": before, "after": after})
+        fixed_line, line_corrs = fix_korean_author_segment(line)
+        for c in line_corrs:
+            add_correction(corrections, c.item, c.before, c.after, c.note)
 
-    # 국문 참고문헌에서 & 사용: 김기욱,& 박성규 (2019).
-    m2 = re.match(r"^(.+?)\s*\((\d{4}|근간|in press|n\.d\.|\d{4},\s*[^)]+)\)\.", original)
-    if m2 and re.search(r"[가-힣]", m2.group(1)):
-        author_before = m2.group(1)
-        author_after = fix_korean_author_segment(author_before)
-        if author_before != author_after:
-            before = f"{author_before} ({m2.group(2)})."
-            after = f"{author_after} ({m2.group(2)})."
-            if not same_text(before, after):
-                rows.append({"item": "국문 저자 나열", "before": before, "after": after})
+        # DOI 생략 권고
+        if re.search(r"doi\s*:|doi\.org", fixed_line, flags=re.IGNORECASE):
+            before = fixed_line
+            after = re.sub(r"\s*https?://(?:dx\.)?doi\.org/\S+", "", fixed_line, flags=re.IGNORECASE)
+            after = re.sub(r"\s*doi\s*:\s*\S+", "", after, flags=re.IGNORECASE).strip()
+            add_correction(corrections, "DOI 표기", before, after, "학위논문 참고문헌에서는 DOI를 생략합니다.")
+            fixed_line = after
 
-    # 국문 학술지 굵게 범위: **학술지명, 권(호)** -> **학술지명, 권**(호)
-    wrong_bold_issue = re.search(r"\*\*([^*]+?),\s*(\d+)\((\d+)\)\*\*,\s*([0-9]+\s*-\s*[0-9]+)", original)
-    if wrong_bold_issue:
-        before = wrong_bold_issue.group(0)
-        after = f"**{wrong_bold_issue.group(1)}, {wrong_bold_issue.group(2)}**({wrong_bold_issue.group(3)}), {wrong_bold_issue.group(4)}"
-        rows.append({"item": "굵게 범위", "before": before, "after": after})
+        # 국문 학술지 굵게 범위 검사. Markdown 입력 기준.
+        journal_plain = re.search(r"([가-힣A-Za-z·\s]+),\s*(\d+)\((\d+)\),\s*(\d+\s*-\s*\d+)\.", fixed_line)
+        journal_bold_correct = re.search(r"\*\*([가-힣A-Za-z·\s]+),\s*(\d+)\*\*\((\d+)\),\s*(\d+\s*-\s*\d+)\.", fixed_line)
+        journal_bold_wrong = re.search(r"\*\*([가-힣A-Za-z·\s]+),\s*(\d+)\((\d+)\)\*\*,\s*(\d+\s*-\s*\d+)\.", fixed_line)
 
-    # 국문 학술지 논문인데 Markdown 굵게가 없는 경우: 확정 오류가 아니라 안내
-    journal_plain = re.search(r"\.\s*([가-힣A-Za-z][가-힣A-Za-z\s·]+),\s*(\d+)\((\d+)\),\s*([0-9]+\s*-\s*[0-9]+)\.", original)
-    if journal_plain and "**" not in original:
-        journal = journal_plain.group(1).strip()
-        volume = journal_plain.group(2)
-        issue = journal_plain.group(3)
-        pages = journal_plain.group(4)
-        before = f"{journal}, {volume}({issue}), {pages}."
-        after = f"**{journal}, {volume}**({issue}), {pages}."
-        rows.append({"item": "국문 학술지 서식", "before": before, "after": after})
+        if journal_bold_wrong:
+            before = journal_bold_wrong.group(0)
+            after = f"**{journal_bold_wrong.group(1).strip()}, {journal_bold_wrong.group(2)}**({journal_bold_wrong.group(3)}), {journal_bold_wrong.group(4)}."
+            add_correction(corrections, "국문 학술지 굵게 범위", before, after, "학술지명과 권까지만 굵게 처리합니다. (호)는 굵게 처리하지 않습니다.")
+            fixed_line = fixed_line.replace(before, after)
+        elif journal_plain and "**" not in fixed_line:
+            before = journal_plain.group(0)
+            after = f"**{journal_plain.group(1).strip()}, {journal_plain.group(2)}**({journal_plain.group(3)}), {journal_plain.group(4)}."
+            add_correction(corrections, "국문 학술지 굵게 표시", before, after, "Markdown 기준으로 학술지명과 권까지만 굵게 표시합니다.")
+            fixed_line = fixed_line.replace(before, after)
+        elif "**" in fixed_line and journal_bold_correct is None and journal_plain:
+            before = journal_plain.group(0)
+            after = f"**{journal_plain.group(1).strip()}, {journal_plain.group(2)}**({journal_plain.group(3)}), {journal_plain.group(4)}."
+            add_correction(corrections, "국문 학술지 굵게 범위", before, after, "굵게 범위를 학술지명과 권까지만 맞춥니다.")
 
-    # 완전 동일 교정 제거
-    unique = []
-    seen = set()
-    for row in rows:
-        key = (row["item"], row["before"], row["after"])
-        if key not in seen and not same_text(row["before"], row["after"]):
-            unique.append(row)
-            seen.add(key)
-    return unique
+        fixed_lines.append(fixed_line)
+
+    return corrections, "\n".join(fixed_lines)
 
 
-def build_full_recommendation(text: str) -> str:
-    """대표 오류를 전체 텍스트에 적용한 초안. 과도한 재작성은 하지 않는다."""
-    out = text
-
-    # 저자. (연도). -> 저자 (연도). 단, 줄 시작에서만 처리
-    def repl_author_dot(m: re.Match) -> str:
-        authors = m.group(1)
-        year = m.group(2)
-        if re.search(r"[가-힣]", authors):
-            return f"{fix_korean_author_segment(authors)} ({year})."
-        return m.group(0)
-
-    out = re.sub(r"(?m)^(.+?)\.\s*\((\d{4}|근간|in press|n\.d\.|\d{4},\s*[^)]+)\)\.", repl_author_dot, out)
-
-    # 국문 저자부 & 제거: 줄 시작 저자부만
-    def repl_author_amp(m: re.Match) -> str:
-        authors = m.group(1)
-        year = m.group(2)
-        if re.search(r"[가-힣]", authors):
-            return f"{fix_korean_author_segment(authors)} ({year})."
-        return m.group(0)
-
-    out = re.sub(r"(?m)^(.+?)\s*\((\d{4}|근간|in press|n\.d\.|\d{4},\s*[^)]+)\)\.", repl_author_amp, out)
-
-    # 굵게 범위 수정
-    out = re.sub(r"\*\*([^*]+?),\s*(\d+)\((\d+)\)\*\*,\s*([0-9]+\s*-\s*[0-9]+)", r"**\1, \2**(\3), \4", out)
-
-    # 본문 인용 일부 수정
-    out = re.sub(r"\b([A-Z][A-Za-z.'-]+)\s*&\s*([A-Z][A-Za-z.'-]+)\((\d{4})\)", r"\1과 \2(\3)", out)
-    out = re.sub(r"\b([A-Z][A-Za-z.'-]+)\s+and\s+([A-Z][A-Za-z.'-]+)\((\d{4})\)", r"\1과 \2(\3)", out)
-    out = re.sub(r"\b([A-Z][A-Za-z.'-]+)\s+et\s+al\.?\s*\((\d{4})\)", r"\1 등(\2)", out)
-
-    return out.strip()
-
-
-# -----------------------------
-# 화면 입력 및 실행
-# -----------------------------
-user_text = st.text_area(
-    "검증할 본문 인용 또는 참고문헌 목록을 입력하세요",
-    height=240,
-    placeholder="예: 김기욱,& 박성규. (2019).\n김지연 (2021). 진로전담교사의 전문성 발달과정 연구: 근거이론적 접근. 진로교육연구, 34(4), 1-35.",
-)
-
-col1, col2 = st.columns(2)
-run_rule = col1.button("1차 규칙 검증", use_container_width=True)
-run_ai = col2.button("AI 정밀 검토", use_container_width=True)
-
-if run_rule and user_text.strip():
-    all_rows: List[Dict[str, str]] = []
-    all_rows.extend(check_in_text_citation(user_text))
-    for entry in split_entries(user_text):
-        all_rows.extend(check_reference_entry(entry))
-
-    final_text = build_full_recommendation(user_text)
-    status = "✅ 명확한 오류 없음" if not all_rows else "🔺 교정 필요"
-
-    st.markdown("### 🔍 검증 결과")
-    st.markdown(f"- **상태**: {status}")
-    st.markdown("- **주의**: 수정 전과 수정 후가 완전히 동일한 항목은 교정 내역에서 자동 제외했습니다.")
+def render_corrections(corrections: List[Correction]) -> None:
+    if not corrections:
+        st.success("감지된 형식 오류가 없습니다.")
+        return
 
     st.markdown("### 🛠️ 교정 내역")
-    st.markdown(make_markdown_table(all_rows))
+    table = ["| 항목 | 수정 전 | 수정 후 |", "|---|---|---|"]
+    for c in corrections:
+        table.append(f"| {html.escape(c.item)} | {html.escape(c.before)} | {html.escape(c.after)} |")
+    st.markdown("\n".join(table))
 
-    st.markdown("### ✍️ 최종 권장 표기 초안")
-    st.code(final_text, language="markdown")
+    with st.expander("교정 근거 보기", expanded=False):
+        for c in corrections:
+            if c.note:
+                st.markdown(f"- **{c.item}**: {c.note}")
 
-if run_ai and user_text.strip():
-    if not client:
-        st.error("OpenAI API Key를 입력하거나 Streamlit Secrets에 등록해 주세요.")
+
+if st.button("검증하기", use_container_width=True):
+    if not user_text.strip():
+        st.warning("검증할 내용을 입력해 주세요.")
         st.stop()
 
-    all_rows: List[Dict[str, str]] = []
-    all_rows.extend(check_in_text_citation(user_text))
-    for entry in split_entries(user_text):
-        all_rows.extend(check_reference_entry(entry))
+    selected_mode = guess_mode(user_text) if mode == "자동 판정" else mode
+    if selected_mode == "본문 내 인용":
+        corrections, fixed_text = check_in_text(user_text)
+    else:
+        corrections, fixed_text = check_references(user_text)
 
-    final_text = build_full_recommendation(user_text)
-    rule_table = make_markdown_table(all_rows)
+    st.markdown("## 🔍 검증 결과")
+    st.markdown(f"- **검증 유형**: {selected_mode}")
+    st.markdown(f"- **상태**: {'✅ 대체로 정확함' if not corrections else '🔺 교정 필요'}")
+    st.markdown("- **주의**: 수정 전과 수정 후가 완전히 동일한 항목은 교정 내역에서 자동 제외됩니다.")
 
-    prompt = f"""
-다음 학생 입력을 경기대학교 상담심리·상담교육 학위논문 참고문헌 작성법 기준으로 검토하세요.
+    render_corrections(corrections)
 
-[학생 입력]
-{user_text}
-
-[규칙 기반 검출 결과]
-{rule_table}
-
-[규칙 기반 최종 권장 표기 초안]
-{final_text}
-
-검토 지시:
-1. 규칙 기반 검출 결과를 우선 신뢰하세요.
-2. 학생 입력과 수정 후가 동일한 항목은 절대 오류로 제시하지 마세요.
-3. 국문 참고문헌 저자 뒤에는 마침표를 찍지 않습니다. '김지연 (2021).'가 맞고 '김지연. (2021).'는 틀립니다.
-4. 국문 저자 나열에서 &를 쓰지 않습니다.
-5. 본문 인용 Fredrickson과 Roberts(1997)는 맞습니다.
-6. 괄호형 다중 인용 (Calogero et al., 2011; Fredrickson et al., 1998)는 맞습니다.
-7. 불확실하면 추가 확인 필요라고 쓰세요.
-
-출력 형식:
-### 🔍 검증 결과
-- 상태:
-- 핵심 진단:
-
-### 🛠️ 교정 내역
-| 항목 | 수정 전 | 수정 후 |
-|---|---|---|
-
-### ✍️ 최종 권장 표기
-```markdown
-...
-```
-"""
-
-    with st.spinner("AI가 정밀 검토 중입니다..."):
-        try:
-            response = client.responses.create(
-                model=model,
-                instructions=SYSTEM_PROMPT,
-                input=prompt,
-            )
-            st.markdown(response.output_text)
-        except Exception as e:
-            st.error(f"오류가 발생했습니다: {e}")
+    st.markdown("### ✍️ 최종 권장 표기")
+    st.code(fixed_text, language="markdown")
 
 st.markdown("---")
-st.caption("※ 이 도구는 1차 검토용입니다. 최종 제출 전 학과 지침서와 지도교수 확인이 필요합니다.")
+st.caption("※ 본 도구는 학과 지침에 따른 1차 형식 검토용입니다. 최종 제출 전 지도교수 및 학과 지침서를 확인하세요.")
