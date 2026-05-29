@@ -1,6 +1,9 @@
 import re
 import html
+import base64
 import streamlit as st
+
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -10,8 +13,46 @@ st.set_page_config(
     layout="centered",
 )
 
-st.title("🎓 경기대 상담심리·상담교육 참고문헌 검증기")
-st.caption("경기대학교 일반대학원 상담심리학과/교육대학원 상담교육전공 학위논문 참고문헌 작성법 기준")
+
+# =====================================================
+# 공식 작성법 PDF
+# =====================================================
+
+PDF_PATH = Path("assets/reference_guide.pdf")
+
+if PDF_PATH.exists():
+
+    pdf_bytes = PDF_PATH.read_bytes()
+
+    st.markdown("### 📘 공식 학위논문 작성법")
+
+    st.download_button(
+        label="📄 학위논문 작성법 PDF 다운로드",
+        data=pdf_bytes,
+        file_name="경기대학교_상담심리_학위논문작성법.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
+
+    with st.expander("👀 PDF 미리보기", expanded=False):
+
+        base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+
+        pdf_display = f"""
+        <iframe
+            src="data:application/pdf;base64,{base64_pdf}"
+            width="100%"
+            height="800"
+            type="application/pdf">
+        </iframe>
+        """
+
+        st.markdown(pdf_display, unsafe_allow_html=True)
+
+else:
+    st.warning("reference_guide.pdf 파일을 찾을 수 없습니다.")
+
+
 
 st.info(
     " ※ 본 도구는 학과 지침에 따른 1차 형식 검토용입니다. 최종 제출 전 학과 지침서를 꼭 확인하세요 "
