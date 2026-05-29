@@ -1,6 +1,5 @@
 import re
 import html
-import base64
 import streamlit as st
 
 from pathlib import Path
@@ -34,20 +33,6 @@ if PDF_PATH.exists():
         use_container_width=True
     )
 
-    with st.expander("👀 PDF 미리보기", expanded=False):
-
-        base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
-
-        pdf_display = f"""
-        <iframe
-            src="data:application/pdf;base64,{base64_pdf}"
-            width="100%"
-            height="800"
-            type="application/pdf">
-        </iframe>
-        """
-
-        st.markdown(pdf_display, unsafe_allow_html=True)
 
 else:
     st.warning("reference_guide.pdf 파일을 찾을 수 없습니다.")
