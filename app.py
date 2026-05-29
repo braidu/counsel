@@ -18,7 +18,7 @@ st.set_page_config(
 # 공식 작성법 PDF
 # =====================================================
 
-PDF_PATH = Path("assets/reference_guide.pdf")
+PDF_PATH = Path("reference_guide.pdf")
 
 if PDF_PATH.exists():
 
